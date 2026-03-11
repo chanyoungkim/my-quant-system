@@ -53,32 +53,41 @@ def get_quant_analysis():
             tickers = [line.strip() for line in f.readlines() if line.strip()]
 
     results = []
-    for ticker in tickers:
+    for raw_ticker in tickers:
         try:
-            symbol = f"{ticker}.KS" if int(ticker) < 900000 else f"{ticker}.KQ"
-            # 데이터 수집 기간을 넉넉히 잡음
-            df = yf.download(symbol, start=(datetime.now() - timedelta(days=100)).strftime('%Y-%m-%d'), progress=False)
+            # [.KS / .KQ 제거 후 깨끗한 숫자만 추출] 
+            # 에러 방지: '005930.KS' -> '005930'
+            clean_ticker = raw_ticker.split('.')[0]
             
-            if df.empty or len(df) < 30: continue
+            # 야후 파이낸스용 심볼 생성
+            symbol = f"{clean_ticker}.KS" if int(clean_ticker) < 900000 else f"{clean_ticker}.KQ"
+            
+            # 데이터 수집
+            df = yf.download(symbol, period="3mo", progress=False)
+            
+            if df.empty or len(df) < 20:
+                continue
 
-            # RSI 계산 (멀티인덱스 방어)
-            close_prices = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
+            # 컬럼 인덱스 처리 (Single/Multi 모두 대응)
+            close_prices = df['Close']
+            if isinstance(close_prices, pd.DataFrame):
+                close_prices = close_prices.iloc[:, 0]
+
+            # RSI 계산
             delta = close_prices.diff()
             up = delta.clip(lower=0).rolling(window=14).mean()
             down = -delta.clip(upper=0).rolling(window=14).mean()
             rsi = (100 - (100 / (1 + (up / down)))).iloc[-1]
 
-            # 현재가 추출
-            curr_price = int(close_prices.iloc[-1])
-            
             results.append({
-                "티커": ticker,
-                "현재가": curr_price,
+                "티커": clean_ticker,
+                "현재가": int(close_prices.iloc[-1]),
                 "RSI": round(float(rsi), 2),
                 "점수": round(100 - float(rsi), 2)
             })
+            print(f"✅ {symbol} 완료")
         except Exception as e:
-            print(f"⚠️ {ticker} 분석 건너뜀: {e}")
+            print(f"⚠️ {raw_ticker} 건너뜀: {e}")
             continue
 
     return pd.DataFrame(results)
