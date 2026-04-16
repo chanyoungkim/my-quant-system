@@ -3,6 +3,7 @@ name: Daily Quant Scanner
 on:
   schedule:
     - cron: '30 23 * * *' # 매일 아침 8시 30분 (UTC 기준 23:30)
+    - cron: '30 5 * * *'
   workflow_dispatch:      # 수동 실행 버튼 활성화
 
 jobs:
