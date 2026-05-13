@@ -4,15 +4,31 @@ import numpy as np  # 추가
 from datetime import datetime, timedelta
 import os
 
-def get_quant_analysis():
-    print("🔍 CCI, MFI 포함 정밀 분석 시작...")
-    
-    # tickers.txt 경로 및 로드 (기존 로직 유지)
-    base_path = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_path, "tickers.txt")
-    
-    if not os.path.exists(file_path):
-             tickers = [
+def get_ticker_list():
+    """실시간 지수 종목을 가져오되, 실패 시 백업 리스트 반환"""
+    print("📡 실시간 우량주(KOSPI 200, KOSDAQ 150) 목록 수집 중...")
+    try:
+        # 코스피 200 (1028), 코스닥 150 (2034) 구성 종목 수집
+        k200 = stock.get_index_portfolio_deposit_file("1028")
+        kd150 = stock.get_index_portfolio_deposit_file("2034")
+        
+        all_tickers = list(set(k200 + kd150)) # 중복 제거
+        
+        # 야후 파이낸스 형식으로 변환
+        formatted = []
+        for t in all_tickers:
+            # 코스피/코스닥 구분 (pykrx의 구체적인 시장 구분 함수 사용)
+            market = stock.get_market_ticker_list(market="KOSPI")
+            suffix = ".KS" if t in market else ".KQ"
+            formatted.append(f"{t}{suffix}")
+        
+        print(f"✅ 실시간 수집 성공: {len(formatted)} 종목")
+        return formatted
+
+    except Exception as e:
+        print(f"⚠️ 실시간 수집 실패({e}). 백업 우량주 리스트를 사용합니다.")
+        # 실패 시 사용할 핵심 우량주 500선 예시 (일부 요약)
+        backup_tickers = [
     # --- 코스피 대형주 (KOSPI 200 중심) ---
     "005930.KS", "000660.KS", "005380.KS", "000270.KS", "035420.KS", "005490.KS", "051910.KS", "006400.KS", 
     "105560.KS", "068270.KS", "035720.KS", "012330.KS", "028260.KS", "000810.KS", "055550.KS", "011780.KS", 
@@ -46,10 +62,13 @@ def get_quant_analysis():
     "336260.KS", "336330.KS", "352820.KS", "361610.KS", "373220.KS", "375500.KS", "377300.KS", "381970.KS",
     "383220.KS", "402340.KS", "448300.KS", "450080.KS"
     ]
-    else:
-        with open(file_path, "r") as f:
-            tickers = [line.strip() for line in f.readlines() if line.strip()]
+        return backup_tickers
 
+
+def get_quant_analysis():
+    print("🔍 CCI, MFI 포함 정밀 분석 시작...")
+    
+    tickers = get_ticker_list()    
     results = []
     for raw_ticker in tickers:
         try:
