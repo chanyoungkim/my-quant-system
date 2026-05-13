@@ -84,5 +84,5 @@ if __name__ == "__main__":
     if not report.empty:
         # 종합점수 높은 순으로 정렬해서 저장
         report = report.sort_values(by="종합점수", ascending=False)
-        report.to_csv("daily_quant_report_v2.csv", index=False, encoding='utf-8-sig')
+        report.to_csv("daily_quant_report.csv", index=False, encoding='utf-8-sig')
         print("✅ 강화된 리포트 생성 완료")
