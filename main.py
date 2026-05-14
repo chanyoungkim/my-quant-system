@@ -173,7 +173,7 @@ def get_quant_analysis():
             # 3. 수급 데이터 매칭
             # supply = investor_map.get(clean_ticker, {"외인순매수": 0, "기관순매수": 0, "수급합계": 0})
             # 2. 네이버 금융 수급 데이터 가져오기
-            f_net, i_net = get_naver_supply(clean_ticker)
+            # f_net, i_net = get_naver_supply(clean_ticker)
             
             results.append({
                 "티커": clean_ticker,
@@ -181,15 +181,12 @@ def get_quant_analysis():
                 "RSI": round(float(rsi), 2),
                 "MFI": round(float(mfi), 2),
                 "CCI": round(float(cci), 2),
-                "외인순매수": f_net,
-                "기관순매수": i_net,
-                "수급합계": f_net + i_net,
                 "종합점수": round(float(total_score), 2)
             })
             print(f"✅ {symbol} 분석 완료 (수급: {f_net + i_net})")
             
             # 네이버 서버 부하 방지를 위한 미세한 지연 (선택사항)
-            time.sleep(0.1)
+            # time.sleep(0.1)
         except Exception as e:
             print(f"⚠️ {raw_ticker} 건너뜀: {e}")
             continue
