@@ -92,6 +92,29 @@ def get_investor_data(ticker_list, days=5):
             
     return investor_results
 
+def get_naver_supply(ticker):
+    """네이버 금융에서 해당 종목의 최신 수급(외인/기관) 1일치를 긁어옴"""
+    url = f"https://finance.naver.com/item/frgn.naver?code={ticker}"
+    try:
+        # 네이버 금융 페이지의 테이블 중 3번째(인덱스 2)가 수급 테이블임
+        # 헤더가 중복되거나 빈 행이 있을 수 있어 처리가 필요함
+        tables = pd.read_html(url, encoding='euc-kr')
+        df = tables[2]
+        
+        # 유효한 데이터만 필터링 (날짜가 있는 행만)
+        df = df.dropna(subset=['날짜'])
+        if df.empty:
+            return 0, 0
+        
+        # 가장 최근일(첫 번째 행)의 외인 순매매량과 기관 순매매량 추출
+        # 네이버 테이블 구조상 '외국인'과 '기관' 컬럼의 순매매량 위치 확인
+        foreign_net = df.iloc[0]['외국인.1'] 
+        inst_net = df.iloc[0]['기관.1']
+        
+        return int(foreign_net), int(inst_net)
+    except Exception as e:
+        # print(f"⚠️ {ticker} 수급 수집 실패: {e}")
+        return 0, 0
 
 def get_quant_analysis():
     print("🔍 CCI, MFI 포함 정밀 분석 시작...")
@@ -100,7 +123,7 @@ def get_quant_analysis():
     results = []
 
     # 2. 수급 데이터 미리 수집
-    investor_map = get_investor_data(tickers, days=5)
+    # investor_map = get_investor_data(tickers, days=5)
     
     for raw_ticker in tickers:
         try:
@@ -148,20 +171,25 @@ def get_quant_analysis():
             total_score = (rsi_score + mfi_score + cci_score) / 3
 
             # 3. 수급 데이터 매칭
-            supply = investor_map.get(clean_ticker, {"외인순매수": 0, "기관순매수": 0, "수급합계": 0})
-
+            # supply = investor_map.get(clean_ticker, {"외인순매수": 0, "기관순매수": 0, "수급합계": 0})
+            # 2. 네이버 금융 수급 데이터 가져오기
+            f_net, i_net = get_naver_supply(clean_ticker)
+            
             results.append({
                 "티커": clean_ticker,
                 "현재가": int(close.iloc[-1]),
                 "RSI": round(float(rsi), 2),
                 "MFI": round(float(mfi), 2),
                 "CCI": round(float(cci), 2),
-                "외인순매수": supply["외인순매수"],
-                "기관순매수": supply["기관순매수"],
-                "수급합계": supply["수급합계"],
+                "외인순매수": f_net,
+                "기관순매수": i_net,
+                "수급합계": f_net + i_net,
                 "종합점수": round(float(total_score), 2)
             })
-            print(f"✅ {symbol} 분석 완료")
+            print(f"✅ {symbol} 분석 완료 (수급: {f_net + i_net})")
+            
+            # 네이버 서버 부하 방지를 위한 미세한 지연 (선택사항)
+            time.sleep(0.1)
         except Exception as e:
             print(f"⚠️ {raw_ticker} 건너뜀: {e}")
             continue
