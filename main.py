@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np  # 추가
 from datetime import datetime, timedelta
+from pykrx import stock  # 수급 데이터 추출용
 import os
 
 def get_ticker_list():
@@ -64,12 +65,43 @@ def get_ticker_list():
     ]
         return backup_tickers
 
+def get_investor_data(ticker_list, days=5):
+    """최근 n거래일간의 외인/기관 순매수 합계를 가져옴"""
+    print(f"📊 최근 {days}거래일 수급 데이터 수집 중...")
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d") # 여유있게 설정
+    
+    investor_results = {}
+    for full_ticker in ticker_list:
+        ticker = full_ticker.split('.')[0]
+        try:
+            # 기간 내 투자자별 순매수량 수집
+            df = stock.get_market_net_purchase_of_equities_by_ticker(start_date, end_date, ticker)
+            # 최근 n일치 합산 (데이터가 있을 경우)
+            if not df.empty:
+                # '전체' 행이 아닌 개별 날짜 데이터를 합산해야 함
+                foreign_net = df['외국인'].tail(days).sum()
+                inst_net = df['기관합계'].tail(days).sum()
+                investor_results[ticker] = {
+                    "외인순매수": int(foreign_net),
+                    "기관순매수": int(inst_net),
+                    "수급합계": int(foreign_net + inst_net)
+                }
+        except:
+            investor_results[ticker] = {"외인순매수": 0, "기관순매수": 0, "수급합계": 0}
+            
+    return investor_results
+
 
 def get_quant_analysis():
     print("🔍 CCI, MFI 포함 정밀 분석 시작...")
     
     tickers = get_ticker_list()    
     results = []
+
+    # 2. 수급 데이터 미리 수집
+    investor_map = get_investor_data(tickers, days=5)
+    
     for raw_ticker in tickers:
         try:
             clean_ticker = raw_ticker.split('.')[0]
@@ -115,12 +147,18 @@ def get_quant_analysis():
             
             total_score = (rsi_score + mfi_score + cci_score) / 3
 
+            # 3. 수급 데이터 매칭
+            supply = investor_map.get(clean_ticker, {"외인순매수": 0, "기관순매수": 0, "수급합계": 0})
+
             results.append({
                 "티커": clean_ticker,
                 "현재가": int(close.iloc[-1]),
                 "RSI": round(float(rsi), 2),
                 "MFI": round(float(mfi), 2),
                 "CCI": round(float(cci), 2),
+                "외인순매수": supply["외인순매수"],
+                "기관순매수": supply["기관순매수"],
+                "수급합계": supply["수급합계"],
                 "종합점수": round(float(total_score), 2)
             })
             print(f"✅ {symbol} 분석 완료")
