@@ -65,38 +65,46 @@ def get_ticker_list():
         return backup_tickers
 
 def get_investor_data(days=5):
-    """지정한 최근 n거래일 동안 '시장 전체' 종목의 외인/기관 순매수 수량(주)을 한 번에 가져와 맵으로 반환"""
-    print(f"📊 최근 {days}거래일 누적 수급 데이터 수집 중...")
+    """실제 거래일 기준으로 최근 n거래일 동안의 외인/기관 순매수 수량(주)을 합산하여 반환"""
+    print(f"📊 실제 거래일 기준 최근 {days}거래일 누적 수급 데이터 수집 중...")
     
-    # 주말/공휴일을 감안해 여유있게 15일 전부터 데이터를 수집한 뒤 최근 n거래일만 필터링
+    # 주말을 포함해 실제 영업일 5일을 확보하기 위해 날짜 범위를 넉넉히 20일 전으로 설정
     end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=20)).strftime("%Y%m%d")
     
     investor_map = {}
     try:
-        # pykrx의 종목별 순매수량 함수 활용 (전체 시장 기준 수량 'on=수량')
-        # 종목별로 루프를 돌면 속도가 너무 느리므로 시장 전체 거래량을 날짜별로 수집해서 합산
-        trading_days = stock.get_market_ohlcv_by_date(start_date, end_date, "005930").index
-        recent_days = [d.strftime("%Y%m%d") for d in trading_days[-days:]]
+        # 삼성전자(005930) 데이터를 기준으로 실제 거래소가 열렸던 날짜 목록만 정확하게 추출
+        df_trading_days = stock.get_market_ohlcv_by_date(start_date, end_date, "005930")
         
-        print(f"📅 수집 거래일 확인: {recent_days}")
+        if df_trading_days.empty:
+            print("⚠️ 거래일 목록을 가져오지 못했습니다. 날짜 설정을 확인하세요.")
+            return investor_map
+            
+        # 실제 열린 날 중 가장 최근 n개의 날짜만 가져옴
+        recent_days = [d.strftime("%Y%m%d") for d in df_trading_days.index[-days:]]
+        print(f"📅 실제 수집 대상 거래일(최근 {days}일): {recent_days}")
         
-        # 각 일자별 전 종목 수급을 가져와서 합산
+        # 각 영업일별 전 종목 수급을 가져와서 누적 합산
         for day in recent_days:
-            # 코스피 수급
-            df_kospi = stock.get_market_net_purchases_of_equities_by_ticker(day, day, "KOSPI")
-            # 코스닥 수급
-            df_kosdaq = stock.get_market_net_purchases_of_equities_by_ticker(day, day, "KOSDAQ")
+            # 코스피/코스닥 당일 전 종목 수급 ('수량' 기준 명시)
+            df_kospi = stock.get_market_net_purchases_of_equities_by_ticker(day, day, "KOSPI", on='수량')
+            df_kosdaq = stock.get_market_net_purchases_of_equities_by_ticker(day, day, "KOSDAQ", on='수량')
             
             df_all = pd.concat([df_kospi, df_kosdaq])
             
+            # 수집된 데이터를 메모리 맵에 누적
             for ticker, row in df_all.iterrows():
-                if ticker not in investor_map:
-                    investor_map[ticker] = {"외인순매수": 0, "기관순매수": 0}
-                investor_map[ticker]["외인순매수"] += int(row.get("외국인합계", 0))
-                investor_map[ticker]["기관순매수"] += int(row.get("기관합계", 0))
+                # 티커 양끝 공백이나 데이터 타입을 문자열로 엄격하게 통일
+                clean_t = str(ticker).strip()
                 
-        print("✅ 수급 데이터 맵 구축 완료")
+                if clean_t not in investor_map:
+                    investor_map[clean_t] = {"외인순매수": 0, "기관순매수": 0}
+                    
+                investor_map[clean_t]["외인순매수"] += int(row.get("외국인합계", 0))
+                investor_map[clean_t]["기관순매수"] += int(row.get("기관합계", 0))
+                
+        print(f"✅ 총 {len(investor_map)}개 종목의 {days}일 누적 수급 데이터 매핑 완료")
     except Exception as e:
         print(f"⚠️ 수급 데이터 수집 중 오류 발생: {e}")
         
