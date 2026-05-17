@@ -16,6 +16,9 @@ def get_ticker_list():
         
         all_tickers = list(set(k200 + kd150)) # 중복 제거
         
+        if not all_tickers:
+            raise ValueError("수집된 티커가 없습니다.")
+            
         # 야후 파이낸스 형식으로 변환
         formatted = []
         market = stock.get_market_ticker_list(market="KOSPI")
@@ -68,27 +71,26 @@ def get_investor_data(ticker_list, days=5):
     """지정한 종목 리스트에 대해 최근 n거래일간의 외인/기관 순매수 수량 합계를 정확히 수집"""
     print(f"📊 타겟 종목 {len(ticker_list)}개에 대한 최근 {days}거래일 누적 수급 수집 시작...")
     
-    # 주말 포함 넉넉하게 최근 15일 전부터 데이터를 받아와 영업일만 필터링
+    # 주말 포함 넉넉하게 최근 15일 전부터 데이터를 받아옴
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
     
     investor_map = {}
     
     for full_ticker in ticker_list:
-        # 야후 포맷(005930.KS)에서 순수 번호 티커(005930)만 추출
         ticker = full_ticker.split('.')[0]
         try:
-            # [교정] pykrx 정식 함수명 사용 및 'on=수량' 옵션 명시
+            # pykrx 정식 단수형 함수명 사용 및 수량 기준 추출
             df = stock.get_market_net_purchase_of_equities_by_ticker(start_date, end_date, ticker, on='수량')
             
-            if not df.empty:
-                # 최하단의 '합계' 행을 제외한 실제 일자별 데이터의 최근 n일치만 필터링해서 합산
-                df_daily = df.dropna()
-                if '합계' in df_daily.index:
-                    df_daily = df_daily.drop('합계')
+            if df is not None and not df.empty:
+                # '합계' 행이 들어있다면 드롭하여 일자별 순수 데이터만 남김
+                if '합계' in df.index:
+                    df = df.drop('합계')
                 
-                # 최근 n거래일 데이터 추출
-                df_recent = df_daily.tail(days)
+                # 실제 데이터가 존재하는 행만 걸러내고 최근 n거래일 확보
+                df_clean = df.dropna()
+                df_recent = df_clean.tail(days)
                 
                 foreign_net = df_recent['외국인합계'].sum()
                 inst_net = df_recent['기관합계'].sum()
@@ -99,34 +101,39 @@ def get_investor_data(ticker_list, days=5):
                 }
             else:
                 investor_map[ticker] = {"외인순매수": 0, "기관순매수": 0}
-        except Exception as e:
-            # 에러 발생 시 0으로 방어 처리
+        except Exception:
+            # 거래소 통신 오류 발생 시 프로그램이 안 터지게 0으로 방어
             investor_map[ticker] = {"외인순매수": 0, "기관순매수": 0}
             
-    print(f"✅ 총 {len(investor_map)}개 종목의 정확한 영업일 기준 수급 매핑 완료")
+        # 디버깅용: 제대로 매칭 중인지 대형주 하나만 확인해보기
+        if ticker == "005930" and ticker in investor_map:
+            print(f"🔍 [샘플체크] 삼성전자 수급 맵 탑재 완료 -> 외인: {investor_map[ticker]['외인순매수']}주")
+            
+    print(f"✅ 총 {len(investor_map)}개 종목 수급 맵 메모리 구축 완료")
     return investor_map
-    
+
 def get_quant_analysis():
     print("🔍 CCI, MFI 및 외인/기관 수급 포함 정밀 분석 시작...")
     
+    # 1. 대상 종목 리스트 로드
     tickers = get_ticker_list()    
     results = []
 
-    # 1. 전 종목의 최근 5거래일 수급 데이터를 미리 메모리에 로드 (속도 최적화)
-    investor_map = get_investor_data(days=5)
+    # 2. 로드한 리스트를 매개변수로 정확히 전달하여 수급 데이터 일괄 수집
+    investor_map = get_investor_data(ticker_list=tickers, days=5)
     
     for raw_ticker in tickers:
         try:
             clean_ticker = raw_ticker.split('.')[0]
             symbol = f"{clean_ticker}.KS" if int(clean_ticker) < 900000 else f"{clean_ticker}.KQ"
             
-            # 기술적 지표 계산용 3개월치 데이터 다운로드
+            # 기술적 지표용 주가 데이터 다운로드
             df = yf.download(symbol, period="3mo", progress=False)
             
             if df.empty or len(df) < 20:
                 continue
 
-            # 데이터 추출 (Single/Multi 인덱스 대응 완벽 지원)
+            # 인덱스 구조 대응 데이터 스퀴즈
             close = df['Close'].squeeze()
             high = df['High'].squeeze()
             low = df['Low'].squeeze()
@@ -150,44 +157,4 @@ def get_quant_analysis():
             positive_flow = (money_flow.where(typical_price > typical_price.shift(1), 0)).rolling(window=14).sum()
             negative_flow = (money_flow.where(typical_price < typical_price.shift(1), 0)).rolling(window=14).sum()
             mfr = positive_flow / negative_flow
-            mfi = (100 - (100 / (1 + mfr))).iloc[-1]
-
-            # 종합 점수 계산 (역발상 스코어링)
-            rsi_score = 100 - rsi
-            mfi_score = 100 - mfi
-            cci_score = ((-cci + 200) / 4)
-            
-            total_score = (rsi_score + mfi_score + cci_score) / 3
-
-            # 2. 미리 준비한 수급 데이터 맵에서 해당 종목 데이터 매칭 (수량 기준)
-            supply = investor_map.get(clean_ticker, {"외인순매수": 0, "기관순매수": 0})
-            f_net = supply["외인순매수"]
-            i_net = supply["기관순매수"]
-            total_net = f_net + i_net
-            
-            results.append({
-                "티커": clean_ticker,
-                "현재가": int(close.iloc[-1]),
-                "RSI": round(float(rsi), 2),
-                "MFI": round(float(mfi), 2),
-                "CCI": round(float(cci), 2),
-                "외인순매수(5일)": f_net,
-                "기관순매수(5일)": i_net,
-                "수급합계(5일)": total_net,
-                "종합점수": round(float(total_score), 2)
-            })
-            print(f"✅ {symbol} 분석 완료 (RSI: {round(rsi,1)} | 5일수급합계: {total_net}주)")
-            
-        except Exception as e:
-            print(f"⚠️ {raw_ticker} 건너뜀: {e}")
-            continue
-
-    return pd.DataFrame(results)
-
-if __name__ == "__main__":
-    report = get_quant_analysis()
-    if not report.empty:
-        # 종합점수 높은 순으로 정렬해서 저장
-        report = report.sort_values(by="종합점수", ascending=False)
-        report.to_csv("daily_quant_report.csv", index=False, encoding='utf-8-sig')
-        print("📊 [성공] 기술적 지표와 5일 수급이 결합된 퀀트 리포트가 생성되었습니다.")
+            mfi = (100 - (10
