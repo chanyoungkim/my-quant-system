@@ -157,4 +157,41 @@ def get_quant_analysis():
             positive_flow = (money_flow.where(typical_price > typical_price.shift(1), 0)).rolling(window=14).sum()
             negative_flow = (money_flow.where(typical_price < typical_price.shift(1), 0)).rolling(window=14).sum()
             mfr = positive_flow / negative_flow
-            mfi = (100 - (10
+            mfi = (100 - (100 / (1 + mfr))).iloc[-1]
+
+            # 종합 점수 역발상 계산
+            rsi_score = 100 - rsi
+            mfi_score = 100 - mfi
+            cci_score = ((-cci + 200) / 4)
+            total_score = (rsi_score + mfi_score + cci_score) / 3
+
+            # 수급 데이터 추출
+            supply = investor_map.get(clean_ticker, {"외인순매수": 0, "기관순매수": 0})
+            f_net = supply["외인순매수"]
+            i_net = supply["기관순매수"]
+            total_net = f_net + i_net
+            
+            results.append({
+                "티커": clean_ticker,
+                "현재가": int(close.iloc[-1]),
+                "RSI": round(float(rsi), 2),
+                "MFI": round(float(mfi), 2),
+                "CCI": round(float(cci), 2),
+                "외인순매수(5일)": f_net,
+                "기관순매수(5일)": i_net,
+                "수급합계(5일)": total_net,
+                "종합점수": round(float(total_score), 2)
+            })
+            
+        except Exception as e:
+            continue
+
+    return pd.DataFrame(results)
+
+if __name__ == "__main__":
+    report = get_quant_analysis()
+    if not report.empty:
+        # 종합점수 높은 순으로 정렬해서 저장
+        report = report.sort_values(by="종합점수", ascending=False)
+        report.to_csv("daily_quant_report.csv", index=False, encoding='utf-8-sig')
+        print("📊 [성공] 기술적 지표와 5일 수급이 결합된 퀀트 리포트가 생성되었습니다.")
