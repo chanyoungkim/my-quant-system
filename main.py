@@ -64,6 +64,7 @@ def get_quant_analysis():
             # 주가 및 거래량 데이터 다운로드 (최근 3개월)
             df = yf.download(symbol, period="3mo", progress=False)
             
+            # 야후 파이낸스에 데이터가 없거나 길이가 짧으면 1차 필터링
             if df.empty or len(df) < 20:
                 continue
 
@@ -73,25 +74,46 @@ def get_quant_analysis():
             low = df['Low'].squeeze()
             volume = df['Volume'].squeeze()
 
+            # 필수 데이터 중 하나라도 NaN이 대다수 포함되어 있으면 스킵
+            if close.isnull().all() or high.isnull().all() or low.isnull().all():
+                continue
+
             # 1. RSI 계산
             delta = close.diff()
             up = delta.clip(lower=0).rolling(window=14).mean()
             down = -delta.clip(upper=0).rolling(window=14).mean()
-            rsi = (100 - (100 / (1 + (up / down)))).iloc[-1]
+            
+            # 분모가 0이 되는 현상 방지 안전장치
+            roll_up = up.iloc[-1]
+            roll_down = down.iloc[-1]
+            if roll_down == 0:
+                rsi = 100 if roll_up > 0 else 50
+            else:
+                rsi = 100 - (100 / (1 + (roll_up / roll_down)))
 
             # 2. CCI 계산
             tp = (high + low + close) / 3
             ma = tp.rolling(window=20).mean()
             mad = tp.rolling(window=20).apply(lambda x: np.abs(x - x.mean()).mean())
-            cci = ((tp - ma) / (0.015 * mad)).iloc[-1]
+            
+            if mad.iloc[-1] == 0:
+                cci = 0
+            else:
+                cci = ((tp - ma) / (0.015 * mad)).iloc[-1]
 
             # 3. MFI 계산
             typical_price = (high + low + close) / 3
             money_flow = typical_price * volume
             positive_flow = (money_flow.where(typical_price > typical_price.shift(1), 0)).rolling(window=14).sum()
             negative_flow = (money_flow.where(typical_price < typical_price.shift(1), 0)).rolling(window=14).sum()
-            mfr = positive_flow / negative_flow
-            mfi = (100 - (100 / (1 + mfr))).iloc[-1]
+            
+            pos_f = positive_flow.iloc[-1]
+            neg_f = negative_flow.iloc[-1]
+            if neg_f == 0:
+                mfi = 100 if pos_f > 0 else 50
+            else:
+                mfr = pos_f / neg_f
+                mfi = 100 - (100 / (1 + mfr))
 
             # 4. [대안 A] 야후 거래량 기반 최근 5거래일 추정 자금 순유입량 계산
             price_direction = np.sign(close.diff())
@@ -104,6 +126,10 @@ def get_quant_analysis():
             mfi_score = 100 - mfi
             cci_score = ((-cci + 200) / 4)
             total_score = (rsi_score + mfi_score + cci_score) / 3
+
+            # 계산된 수치 중 하나라도 NaN이 있다면 결과 목록에 포함하지 않음
+            if np.isnan(rsi) or np.isnan(mfi) or np.isnan(cci) or np.isnan(total_score):
+                continue
 
             results.append({
                 "티커": clean_ticker,
@@ -119,7 +145,13 @@ def get_quant_analysis():
             # 수집 중 에러가 나는 개별 종목은 스킵하고 안정적으로 전진
             continue
 
-    return pd.DataFrame(results)
+    if not results:
+        return pd.DataFrame()
+
+    # 데이터프레임 변환 후 최종 결측치 검증 및 제거
+    final_df = pd.DataFrame(results)
+    final_df = final_df.dropna(subset=["RSI", "MFI", "CCI", "종합점수"])
+    return final_df
 
 if __name__ == "__main__":
     report = get_quant_analysis()
@@ -127,4 +159,4 @@ if __name__ == "__main__":
         # 역발상 기회가 높은(종합점수가 높은) 순서대로 배치
         report = report.sort_values(by="종합점수", ascending=False)
         report.to_csv("daily_quant_report.csv", index=False, encoding='utf-8-sig')
-        print(f"📊 [성공] 총 {len(report)}개 종목 분석 완료! 거래량 추정 수급 리포트가 정상 생성되었습니다.")
+        print(f"📊 [성공] 총 {len(report)}개 종목 분석 완료! 결측치가 완벽 제거된 수급 리포트가 정상 생성되었습니다.")
