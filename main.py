@@ -64,52 +64,48 @@ def get_ticker_list():
         ]
         return backup_tickers
 
-def get_investor_data(days=5):
-    """실제 거래일 기준으로 최근 n거래일 동안의 외인/기관 순매수 수량(주)을 합산하여 반환"""
-    print(f"📊 실제 거래일 기준 최근 {days}거래일 누적 수급 데이터 수집 중...")
+def get_investor_data(ticker_list, days=5):
+    """지정한 종목 리스트에 대해 최근 n거래일간의 외인/기관 순매수 수량 합계를 정확히 수집"""
+    print(f"📊 타겟 종목 {len(ticker_list)}개에 대한 최근 {days}거래일 누적 수급 수집 시작...")
     
-    # 주말을 포함해 실제 영업일 5일을 확보하기 위해 날짜 범위를 넉넉히 20일 전으로 설정
+    # 주말 포함 넉넉하게 최근 15일 전부터 데이터를 받아와 영업일만 필터링
     end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=20)).strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
     
     investor_map = {}
-    try:
-        # 삼성전자(005930) 데이터를 기준으로 실제 거래소가 열렸던 날짜 목록만 정확하게 추출
-        df_trading_days = stock.get_market_ohlcv_by_date(start_date, end_date, "005930")
-        
-        if df_trading_days.empty:
-            print("⚠️ 거래일 목록을 가져오지 못했습니다. 날짜 설정을 확인하세요.")
-            return investor_map
+    
+    for full_ticker in ticker_list:
+        # 야후 포맷(005930.KS)에서 순수 번호 티커(005930)만 추출
+        ticker = full_ticker.split('.')[0]
+        try:
+            # [교정] pykrx 정식 함수명 사용 및 'on=수량' 옵션 명시
+            df = stock.get_market_net_purchase_of_equities_by_ticker(start_date, end_date, ticker, on='수량')
             
-        # 실제 열린 날 중 가장 최근 n개의 날짜만 가져옴
-        recent_days = [d.strftime("%Y%m%d") for d in df_trading_days.index[-days:]]
-        print(f"📅 실제 수집 대상 거래일(최근 {days}일): {recent_days}")
-        
-        # 각 영업일별 전 종목 수급을 가져와서 누적 합산
-        for day in recent_days:
-            # 코스피/코스닥 당일 전 종목 수급 ('수량' 기준 명시)
-            df_kospi = stock.get_market_net_purchases_of_equities_by_ticker(day, day, "KOSPI", on='수량')
-            df_kosdaq = stock.get_market_net_purchases_of_equities_by_ticker(day, day, "KOSDAQ", on='수량')
-            
-            df_all = pd.concat([df_kospi, df_kosdaq])
-            
-            # 수집된 데이터를 메모리 맵에 누적
-            for ticker, row in df_all.iterrows():
-                # 티커 양끝 공백이나 데이터 타입을 문자열로 엄격하게 통일
-                clean_t = str(ticker).strip()
+            if not df.empty:
+                # 최하단의 '합계' 행을 제외한 실제 일자별 데이터의 최근 n일치만 필터링해서 합산
+                df_daily = df.dropna()
+                if '합계' in df_daily.index:
+                    df_daily = df_daily.drop('합계')
                 
-                if clean_t not in investor_map:
-                    investor_map[clean_t] = {"외인순매수": 0, "기관순매수": 0}
-                    
-                investor_map[clean_t]["외인순매수"] += int(row.get("외국인합계", 0))
-                investor_map[clean_t]["기관순매수"] += int(row.get("기관합계", 0))
+                # 최근 n거래일 데이터 추출
+                df_recent = df_daily.tail(days)
                 
-        print(f"✅ 총 {len(investor_map)}개 종목의 {days}일 누적 수급 데이터 매핑 완료")
-    except Exception as e:
-        print(f"⚠️ 수급 데이터 수집 중 오류 발생: {e}")
-        
+                foreign_net = df_recent['외국인합계'].sum()
+                inst_net = df_recent['기관합계'].sum()
+                
+                investor_map[ticker] = {
+                    "외인순매수": int(foreign_net),
+                    "기관순매수": int(inst_net)
+                }
+            else:
+                investor_map[ticker] = {"외인순매수": 0, "기관순매수": 0}
+        except Exception as e:
+            # 에러 발생 시 0으로 방어 처리
+            investor_map[ticker] = {"외인순매수": 0, "기관순매수": 0}
+            
+    print(f"✅ 총 {len(investor_map)}개 종목의 정확한 영업일 기준 수급 매핑 완료")
     return investor_map
-
+    
 def get_quant_analysis():
     print("🔍 CCI, MFI 및 외인/기관 수급 포함 정밀 분석 시작...")
     
