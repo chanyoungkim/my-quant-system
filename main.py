@@ -81,7 +81,6 @@ def get_ticker_list():
         "053610.KQ"
     ]
     
-    # 중복 제거 및 유효한 접미사 체크 (.KS / .KQ)
     unique_tickers = list(set(tickers))
     clean_tickers = [t for t in unique_tickers if t.endswith(".KS") or t.endswith(".KQ")]
     
@@ -97,10 +96,10 @@ def get_quant_analysis():
         try:
             clean_ticker = symbol.split(".")[0]
 
-            # 주가 및 거래량 데이터 다운로드 (최근 3개월)
-            df = yf.download(symbol, period="3mo", progress=False)
+            # 이평선 및 추세 지표 계산을 위해 데이터 기간을 3개월 -> 1년으로 확장 (120일선 확보 필수)
+            df = yf.download(symbol, period="1y", progress=False)
 
-            if df.empty or len(df) < 20:
+            if df.empty or len(df) < 130:  # 120일선 연산 안정성을 확보하기 위해 변경
                 continue
 
             # MultiIndex 구조 대응을 위한 Squeeze 처리
@@ -125,7 +124,55 @@ def get_quant_analysis():
             # 지표 2: 당일 거래대금 (단위: 억 원)
             trading_value_krw = (current_close * current_volume) / 100_000_000
 
-            # 1. RSI (Relative Strength Index) 계산
+            # ----------------------------------------
+            # [추가] 중장기 추세 판단을 위한 핵심 지표 계산
+            # ----------------------------------------
+            # 1) 이동평균선 기반 정배열/우상향 판단
+            ma20 = close.rolling(window=20).mean()
+            ma60 = close.rolling(window=60).mean()
+            ma120 = close.rolling(window=120).mean()
+            
+            c_close = close.iloc[-1]
+            c_ma20, c_ma60, c_ma120 = ma20.iloc[-1], ma60.iloc[-1], ma120.iloc[-1]
+            
+            # 주가가 20일선 위에 있으면서, 이평선들이 역배열이 아닌 형태 (상승 추세 확인)
+            is_bull_ma = "정배열" if (c_close > c_ma20) and (c_ma20 > c_ma60 > c_ma120) else (
+                "상승전환" if (c_close > c_ma20) and (c_ma20 > c_ma60) else "하락/역배열"
+            )
+
+            # 2) MACD 계산 (12, 26, 9)
+            exp1 = close.ewm(span=12, adjust=False).mean()
+            exp2 = close.ewm(span=26, adjust=False).mean()
+            macd = exp1 - exp2
+            macd_signal = macd.ewm(span=9, adjust=False).mean()
+            
+            c_macd = macd.iloc[-1]
+            c_signal = macd_signal.iloc[-1]
+            # MACD가 0보다 크고 시그널선 위에 있는지 여부
+            is_macd_bull = "상승(0이상)" if c_macd > 0 and c_macd > c_signal else (
+                "골든크로스(0이하)" if c_macd <= 0 and c_macd > c_signal else "하락추세"
+            )
+
+            # 3) ADX 추세 강도 지표 계산 (14일 기준)
+            plus_dm = high.diff()
+            minus_dm = low.diff()
+            
+            plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0)
+            minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0)
+            
+            tr = pd.concat([high - low, 
+                            np.abs(high - close.shift(1)), 
+                            np.abs(low - close.shift(1))], axis=1).max(axis=1)
+            
+            atr = tr.rolling(window=14).mean()
+            plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(window=14).mean() / atr)
+            minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(window=14).mean() / atr)
+            
+            dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+            adx = dx.rolling(window=14).mean().iloc[-1]
+            # ----------------------------------------
+
+            # 기존 역발상 지표 (RSI, CCI, MFI 계산)
             delta = close.diff()
             up = delta.clip(lower=0).rolling(window=14).mean()
             down = -delta.clip(upper=0).rolling(window=14).mean()
@@ -137,7 +184,6 @@ def get_quant_analysis():
             else:
                 rsi = 100 - (100 / (1 + (roll_up / roll_down)))
 
-            # 2. CCI (Commodity Channel Index) 계산
             tp = (high + low + close) / 3
             ma = tp.rolling(window=20).mean()
             mad = tp.rolling(window=20).apply(lambda x: np.abs(x - x.mean()).mean())
@@ -147,7 +193,6 @@ def get_quant_analysis():
             else:
                 cci = ((tp - ma) / (0.015 * mad)).iloc[-1]
 
-            # 3. MFI (Money Flow Index) 계산
             typical_price = (high + low + close) / 3
             money_flow = typical_price * volume
             positive_flow = (money_flow.where(typical_price > typical_price.shift(1), 0)).rolling(window=14).sum()
@@ -161,19 +206,18 @@ def get_quant_analysis():
                 mfr = pos_f / neg_f
                 mfi = 100 - (100 / (1 + mfr))
 
-            # 4. 최근 5거래일 추정 자금 순유입량 계산
             price_direction = np.sign(close.diff())
             volume_flow = price_direction * volume
             recent_5d_flow = volume_flow.tail(5).sum()
             est_net_purchase = round(float(recent_5d_flow) / 10000, 1)
 
-            # 역발상 종합 점수 계산 (지표가 극단 과매도 바닥일수록 높은 점수 부여)
+            # 역발상 종합 점수 계산
             rsi_score = 100 - rsi
             mfi_score = 100 - mfi
             cci_score = (-cci + 200) / 4
             total_score = (rsi_score + mfi_score + cci_score) / 3
 
-            if np.isnan(rsi) or np.isnan(mfi) or np.isnan(cci) or np.isnan(total_score):
+            if np.isnan(rsi) or np.isnan(mfi) or np.isnan(cci) or np.isnan(total_score) or np.isnan(adx):
                 continue
 
             results.append({
@@ -185,6 +229,9 @@ def get_quant_analysis():
                 "추정수급(5일,만주)": est_net_purchase,
                 "거래량비율(5일평균대비)": round(volume_ratio_5d, 2),
                 "당일거래대금(억)": round(trading_value_krw, 2),
+                "이평선추세": is_bull_ma,
+                "MACD에너지": is_macd_bull,
+                "ADX(추세강도)": round(float(adx), 2),
                 "종합점수": round(float(total_score), 2)
             })
 
@@ -202,7 +249,7 @@ def get_quant_analysis():
 if __name__ == "__main__":
     report = get_quant_analysis()
     if not report.empty:
-        # 종합점수를 기준으로 내림차순 정렬 (바닥권 종목이 상위에 노출됨)
+        # 기존 종합점수(바닥권 점수) 기준 내림차순 정렬
         report = report.sort_values(by="종합점수", ascending=False)
         report.to_csv("daily_quant_report.csv", index=False, encoding="utf-8-sig")
         print(f"\n📊 [성공] 총 {len(report)}개 핵심 대형주 분석 완료!")
